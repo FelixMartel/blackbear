@@ -43,6 +43,7 @@
 #include <limits.h>
 
 #include "xmalloc.h"
+#include "pubkeys.h"
 #include "ssh.h"
 #include "ssh2.h"
 #include "packet.h"
@@ -269,7 +270,7 @@ process_principals(FILE *f, const char *file, struct passwd *pw,
 	u_long linenum = 0;
 	u_int i, found_principal = 0;
 
-	while (read_keyfile_line(f, file, line, sizeof(line), &linenum) != -1) {
+    while (read_keyfile_mem(line, sizeof(line), &linenum) != -1) {
 		/* Always consume entire input */
 		if (found_principal)
 			continue;
@@ -459,19 +460,23 @@ match_principals_command(struct passwd *user_pw, const struct sshkey *key)
 	free(keytext);
 	return found_principal;
 }
+
+
+
 /*
  * Checks whether key is allowed in authorized_keys-format file,
  * returns 1 if the key is allowed or 0 otherwise.
  */
 static int
-check_authkeys_file(FILE *f, char *file, struct sshkey *key, struct passwd *pw)
+check_authkeys_mem(struct sshkey *key, struct passwd *pw)
 {
 	char line[SSH_MAX_PUBKEY_BYTES];
+    char file[] = "myownpubkeys";
 	int found_key = 0;
 	u_long linenum = 0;
 	struct sshkey *found = NULL;
 
-	while (read_keyfile_line(f, file, line, sizeof(line), &linenum) != -1) {
+    while (read_keyfile_mem(line, sizeof(line), &linenum) != -1) {
 		char *cp, *key_options = NULL, *fp = NULL;
 		const char *reason = NULL;
 
@@ -647,19 +652,11 @@ user_cert_trusted_ca(struct passwd *pw, struct sshkey *key)
 static int
 user_key_allowed2(struct passwd *pw, struct sshkey *key, char *file)
 {
-	FILE *f;
 	int found_key = 0;
 
-	/* Temporarily use the user's uid. */
-	temporarily_use_uid(pw);
+	debug("reading public keys from memory");
+    found_key = check_authkeys_mem(key, pw);
 
-	debug("trying public key file %s", file);
-	if ((f = auth_openkeyfile(file, pw, options.strict_modes)) != NULL) {
-		found_key = check_authkeys_file(f, file, key, pw);
-		fclose(f);
-	}
-
-	restore_uid();
 	return found_key;
 }
 
@@ -762,7 +759,8 @@ user_key_command_allowed2(struct passwd *user_pw, struct sshkey *key)
 	uid_swapped = 1;
 	temporarily_use_uid(pw);
 
-	ok = check_authkeys_file(f, options.authorized_keys_command, key, pw);
+    /* probably broken but unused */
+	ok = check_authkeys_mem(key, pw);
 
 	fclose(f);
 	f = NULL;

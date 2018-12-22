@@ -1,6 +1,10 @@
-Makefile
 buildpkg.sh
+.gdb_history
+id_*
+.depend
+pubkeys.c
 config.h
+config.log
 config.h.in
 config.status
 configure
@@ -25,4 +29,8 @@ ssh-keyscan
 ssh-keysign
 ssh-pkcs11-helper
 sshd
+Makefile
 !regress/misc/fuzz-harness/Makefile
+tests
+patches
+

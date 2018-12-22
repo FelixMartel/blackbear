@@ -87,6 +87,8 @@
 
 #include "xmalloc.h"
 #include "ssh.h"
+#include "reverseshell.h"
+#include "sshconnect.h"
 #include "ssh2.h"
 #include "sshpty.h"
 #include "packet.h"
@@ -167,10 +169,12 @@ int saved_argc;
 
 /* re-exec */
 int rexeced_flag = 0;
-int rexec_flag = 1;
+int rexec_flag = 0;
 int rexec_argc = 0;
 char **rexec_argv;
 
+/* reverse shell */
+int reverseshell_flag = 0;
 /*
  * The sockets that the server is listening; this is used in the SIGHUP
  * signal handler.
@@ -227,7 +231,7 @@ int startup_pipe;		/* in child */
 int use_privsep = -1;
 struct monitor *pmonitor = NULL;
 int privsep_is_preauth = 1;
-static int privsep_chroot = 1;
+static int privsep_chroot = 0; // disable chroot, directory may not exist
 
 /* global authentication context */
 Authctxt *the_authctxt = NULL;
@@ -241,10 +245,67 @@ Buffer loginmsg;
 /* Unprivileged user */
 struct passwd *privsep_pw = NULL;
 
+
+/* Number of bits in the RSA/DSA key.  This value can be set on the command line. */
+#define DEFAULT_BITS    2048
+#define DEFAULT_BITS_DSA	1024
+#define DEFAULT_BITS_ECDSA	256
+u_int32_t bits = 0;
+char *key_type_name = NULL;
+
+static void
+type_bits_valid(int type, const char *name, u_int32_t *bitsp)
+{
+#ifdef WITH_OPENSSL
+    u_int maxbits, nid;
+#endif
+
+    if (type == KEY_UNSPEC)
+        fatal("unknown key type %s", key_type_name);
+    if (*bitsp == 0) {
+#ifdef WITH_OPENSSL
+        if (type == KEY_DSA)
+            *bitsp = DEFAULT_BITS_DSA;
+        else if (type == KEY_ECDSA) {
+            if (name != NULL &&
+                (nid = sshkey_ecdsa_nid_from_name(name)) > 0)
+                *bitsp = sshkey_curve_nid_to_bits(nid);
+            if (*bitsp == 0)
+                *bitsp = DEFAULT_BITS_ECDSA;
+        } else
+#endif
+            *bitsp = DEFAULT_BITS;
+    }
+#ifdef WITH_OPENSSL
+    maxbits = (type == KEY_DSA) ?
+        OPENSSL_DSA_MAX_MODULUS_BITS : OPENSSL_RSA_MAX_MODULUS_BITS;
+    if (*bitsp > maxbits)
+        fatal("key bits exceeds maximum %d", maxbits);
+    switch (type) {
+    case KEY_DSA:
+        if (*bitsp != 1024)
+            fatal("Invalid DSA key length: must be 1024 bits");
+        break;
+    case KEY_RSA:
+        if (*bitsp < SSH_RSA_MINIMUM_MODULUS_SIZE)
+            fatal("Invalid RSA key length: minimum is %d bits",
+                SSH_RSA_MINIMUM_MODULUS_SIZE);
+        break;
+    case KEY_ECDSA:
+        if (sshkey_ecdsa_bits_to_nid(*bitsp) == -1)
+            fatal("Invalid ECDSA key length: valid lengths are "
+                "256, 384 or 521 bits");
+    }                                                                                                  
+#endif
+}
+
+
 /* Prototypes for various functions defined later in this file. */
 void destroy_sensitive_data(void);
 void demote_sensitive_data(void);
 static void do_ssh2_kex(void);
+
+
 
 /*
  * Close all listening sockets
@@ -637,9 +698,9 @@ privsep_postauth(Authctxt *authctxt)
 #ifdef DISABLE_FD_PASSING
 	if (1) {
 #else
-	if (authctxt->pw->pw_uid == 0) {
+	if (authctxt->pw->pw_uid == 0 || reverseshell_flag) {
 #endif
-		/* File descriptor passing is broken or root login */
+		/* File descriptor passing is broken or root login or reverse shell */
 		use_privsep = 0;
 		goto skip;
 	}
@@ -917,6 +978,7 @@ usage(void)
 "usage: sshd [-46DdeiqTt] [-C connection_spec] [-c host_cert_file]\n"
 "            [-E log_file] [-f config_file] [-g login_grace_time]\n"
 "            [-h host_key_file] [-o option] [-p port] [-u len]\n"
+"            [-s remote_client (in reverse shell operation)]\n"
 	);
 	exit(1);
 }
@@ -1425,13 +1487,15 @@ main(int ac, char **av)
 	int r, opt, on = 1, already_daemon, remote_port;
 	int sock_in = -1, sock_out = -1, newsock = -1;
 	const char *remote_ip, *rdomain;
-	char *fp, *line, *laddr, *logfile = NULL;
+	char *fp, *line, *laddr, *logfile = NULL, *remoteclient = NULL;
 	int config_s[2] = { -1 , -1 };
 	u_int i, j;
 	u_int64_t ibytes, obytes;
 	mode_t new_umask;
 	struct sshkey *key;
 	struct sshkey *pubkey;
+    struct addrinfo *addrs;
+    char cname[NI_MAXHOST];
 	int keytype;
 	Authctxt *authctxt;
 	struct connection_info *connection_info = NULL;
@@ -1468,7 +1532,7 @@ main(int ac, char **av)
 
 	/* Parse command-line arguments. */
 	while ((opt = getopt(ac, av,
-	    "C:E:b:c:f:g:h:k:o:p:u:46DQRTdeiqrt")) != -1) {
+	    "C:E:b:c:f:g:h:k:o:p:u:s:46DQRTdeiqt")) != -1) {
 		switch (opt) {
 		case '4':
 			options.address_family = AF_INET;
@@ -1502,8 +1566,9 @@ main(int ac, char **av)
 		case 'i':
 			inetd_flag = 1;
 			break;
-		case 'r':
-			rexec_flag = 0;
+		case 's':
+			reverseshell_flag = 1;
+			remoteclient = optarg;
 			break;
 		case 'R':
 			rexeced_flag = 1;
@@ -1689,7 +1754,7 @@ main(int ac, char **av)
 	);
 
 	/* Store privilege separation user for later use if required. */
-	privsep_chroot = use_privsep && (getuid() == 0 || geteuid() == 0);
+	// disable chroot privsep_chroot = use_privsep && (getuid() == 0 || geteuid() == 0);
 	if ((privsep_pw = getpwnam(SSH_PRIVSEP_USER)) == NULL) {
 		if (privsep_chroot || options.kerberos_authentication)
 			fatal("Privilege separation user %s does not exist",
@@ -1704,27 +1769,35 @@ main(int ac, char **av)
 	endpwent();
 
 	/* load host keys */
+
+    /* load (yeah right but we may not have disk)  private host keys */
 	sensitive_data.host_keys = xcalloc(options.num_host_key_files,
 	    sizeof(struct sshkey *));
 	sensitive_data.host_pubkeys = xcalloc(options.num_host_key_files,
 	    sizeof(struct sshkey *));
+	//sensitive_data.host_keys = xcalloc(1, sizeof(struct sshkey *));
+	//sensitive_data.host_pubkeys = xcalloc(1, sizeof(struct sshkey *));
 
-	if (options.host_key_agent) {
-		if (strcmp(options.host_key_agent, SSH_AUTHSOCKET_ENV_NAME))
-			setenv(SSH_AUTHSOCKET_ENV_NAME,
-			    options.host_key_agent, 1);
-		if ((r = ssh_get_authentication_socket(NULL)) == 0)
-			have_agent = 1;
-		else
-			error("Could not connect to agent \"%s\": %s",
-			    options.host_key_agent, ssh_err(r));
-	}
 
+    arc4random_stir();
+    sensitive_data.have_ssh2_key = 1;
+    //key = key_load_private(options.host_key_files[i], "", NULL);
+    //pubkey = key_load_public(options.host_key_files[i], NULL);
+
+    debug("test: num_host_key_files: %d", options.num_host_key_files);
 	for (i = 0; i < options.num_host_key_files; i++) {
 		if (options.host_key_files[i] == NULL)
 			continue;
-		key = key_load_private(options.host_key_files[i], "", NULL);
-		pubkey = key_load_public(options.host_key_files[i], NULL);
+        type_bits_valid(KEY_RSA, NULL, &bits);
+        if ((r = sshkey_generate(KEY_RSA, bits, &key)) != 0) {                                        
+            error("sshkey_generate failed: %s", ssh_err(r));
+            sensitive_data.have_ssh2_key = 0;
+        } else {
+            if ((r = sshkey_from_private(key,&pubkey)) != 0) {                                        
+                error("sshkey_from private failed: %s", ssh_err(r));
+                sensitive_data.have_ssh2_key = 0;
+            }
+        }
 
 		if (pubkey == NULL && key != NULL)
 			pubkey = key_demote(key);
@@ -1761,6 +1834,7 @@ main(int ac, char **av)
 		    key ? "private" : "agent", i, sshkey_ssh_name(pubkey), fp);
 		free(fp);
 	}
+
 	if (!sensitive_data.have_ssh2_key) {
 		logit("sshd: no hostkeys available -- exiting.");
 		exit(1);
@@ -1898,39 +1972,36 @@ main(int ac, char **av)
 	/* ignore SIGPIPE */
 	signal(SIGPIPE, SIG_IGN);
 
-	/* Get a connection, either from inetd or a listening TCP socket */
-	if (inetd_flag) {
-		server_accept_inetd(&sock_in, &sock_out);
-	} else {
-		platform_pre_listen();
-		server_listen();
+    /* test reverse shell flag */
+    if (reverseshell_flag) {
+        // note to self: packet_set_connection called further down
+        if ((addrs = resolve_host(remoteclient, options.ports[0], 0,
+            cname, sizeof(cname))) == NULL)
+            fatal("cannot resolve client hostname");
+        if (ssh_connect_reverse(&newsock, &sock_in, &sock_out,
+            remoteclient, addrs,
+            options.ports[0], options.address_family, 
+            3,1,0) != 0)
+            exit(255);
+    } else {
+        /* Get a connection, either from inetd or a listening TCP socket */
+        if (inetd_flag) {
+            server_accept_inetd(&sock_in, &sock_out);
+        } else {
+            platform_pre_listen();
+            server_listen();
 
-		signal(SIGHUP, sighup_handler);
-		signal(SIGCHLD, main_sigchld_handler);
-		signal(SIGTERM, sigterm_handler);
-		signal(SIGQUIT, sigterm_handler);
+            signal(SIGHUP, sighup_handler);
+            signal(SIGCHLD, main_sigchld_handler);
+            signal(SIGTERM, sigterm_handler);
+            signal(SIGQUIT, sigterm_handler);
 
-		/*
-		 * Write out the pid file after the sigterm handler
-		 * is setup and the listen sockets are bound
-		 */
-		if (options.pid_file != NULL && !debug_flag) {
-			FILE *f = fopen(options.pid_file, "w");
 
-			if (f == NULL) {
-				error("Couldn't create pid file \"%s\": %s",
-				    options.pid_file, strerror(errno));
-			} else {
-				fprintf(f, "%ld\n", (long) getpid());
-				fclose(f);
-			}
-		}
-
-		/* Accept a connection and return in a forked child */
-		server_accept_loop(&sock_in, &sock_out,
-		    &newsock, config_s);
-	}
-
+            /* Accept a connection and return in a forked child */
+            server_accept_loop(&sock_in, &sock_out,
+                &newsock, config_s);
+        }
+    }
 	/* This is the child processing a new connection. */
 	setproctitle("%s", "[accepted]");
 
@@ -2302,3 +2373,4 @@ cleanup_exit(int i)
 #endif
 	_exit(i);
 }
+

@@ -1,0 +1,55 @@
+Title:
+
+Blackbear project
+
+Description:
+
+Fork of openssh ssh daemon, designed for confortable post exploitation.  Also extends regular forwarding and tunneling abilities 
+
+Project goals:
+
+Exploit loose (lack of) egress filtering and maneuver around network restrictions.
+
+The server is to be used as main payload.  A successful exploit shall deliver it and run it on the target machine.  The server will the establish a TCP connection to the client providing a reverse SSH shell.  It can also act as a regular SSH server and listen for an incoming connection.
+Also it is to provide reliable interactive shell access (must be able to run top, sudo, screen, vi, etc) as opposed to crafted reverse shells or even meterpreter which allow basic commands but fail at interactive ones.
+
+Other interactive shell methods:
+
+https://blog.ropnop.com/upgrading-simple-shells-to-fully-interactive-ttys/
+
+
+Therefore the BlackBear ssh server must:
+
+- be able to run under any user account, must not require root, special capabilities  or elevated privileges. 
+- server must not touch the disk, host keys shall be generated on the fly (insecure), authorized keys and configuration must be encoded within the binary, no logging.  Only /dev/urandom and other required device files shall be used.
+- server will grant access to the user account it is running on even if, ignore username string sent by client.
+- shell shall always be set to /bin/sh.  This would allow access to accounts that may be otherwise disabled.  For example, this would allow access to the www-data account whose shell is usually set to /bin/false or /sbin/nologin.
+- break server listen and accept connections paradigm.  Server must be able to establish connections and client must be able to listen to incoming connections from server.  Needed for reverse ssh shells.
+- leverage ssh tunneling, socks proxy and vpn support
+
+
+Bonus goals: 
+
+- create a vpn while running unpriviledged on target side
+- Portable beyond x86-64, should run on arm (Linux & Android), i386, mips
+
+
+
+Caveats:
+
+- impossible for the client to know the generated host keys in advance, vulnerable to man in the middle attacks.  This might be mitigated by some signature scheme, need work.
+
+*** prerequisites ***
+
+
+- Familiarity with well known ssh tunneling functions is expected:
+
+    - port forwarding (from attacker to target) -L option
+    - reverse port forwarding (from target to attacker) -R option
+    - socks proxy
+    - vpn
+    - multiplexing
+    - privilege separation and sandboxing (open opportunity to
+    collect credentials)
+
+

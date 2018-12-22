@@ -1,0 +1,34 @@
+
+# disable sandbox and use internal crypto, openssl 1.1 is not supported
+./configure --with-sandbox=no --without-openssl
+
+Be wary of sandbox and privilege separation
+
+seccomp being used to sandbox unprivileged process
+sandbox-seccomp-filter.c
+in monitor.c
+mm_get_xxxx = requests from unpriv to priv
+mm_answer_xxx = responses from privileged process
+
+reversing connection
+
+need to explore code to see puzzle, reassemble pieces to create new 
+puzzle
+
+client
+
+need to know how to fill struct addrinfo
+
+- ssh_connect_direct
+- ssh_connect
+- resolve_host in ssh.c returns struct addrinfo
+
+lay new logic near ssh_connect call in ssh.c  create ssh_listen function in sshconnect.c
+- 
+
+Privelege separation, check with ss -xp
+
+root@concussions:~# ss -xp | grep 633738
+u_str  ESTAB      0      0       * 633738                * 633737                users:(("sshd",pid=6402,fd=6))
+u_str  ESTAB      0      0       * 633737                * 633738                users:(("sshd",pid=6403,fd=4))
+
